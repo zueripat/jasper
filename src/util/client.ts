@@ -54,23 +54,23 @@ export class Bot extends Client {
     }
 
     private async loadCommands(): Promise<void> {
-        const commandFiles = await readdir(resolve(__dirname, '../events/interactions'));
-        const commandImports = commandFiles
-            .filter((file) => file.endsWith('.ts') || file.endsWith('.js'))
-            .map((file) => {
-                const filePath = resolve(__dirname, '../events/interactions', file);
-                const moduleUrl = new URL(`file://${filePath}`).href;
+        try {
+            const commandFiles = await readdir(resolve(__dirname, '../events/interactions'));
+            const commandImports = commandFiles
+                .filter((file) => file.endsWith('.ts') || file.endsWith('.js'))
+                .map((file) => {
+                    const filePath = resolve(__dirname, '../events/interactions', file);
+                    return import(filePath) as Promise<{
+                        default: Command<CommandInteraction, boolean>;
+                    }>;
+                });
 
-                return import(moduleUrl) as Promise<{
-                    default: Command<CommandInteraction, boolean>;
-                }>;
-            });
-
-        const commands = await Promise.all(commandImports);
-        for (const command of commands) {
-            log.info(`Loading command ${command.default.data.name}`);
-            this.commands.set(command.default.data.name, command.default);
-        }
+            const commands = await Promise.all(commandImports);
+            for (const command of commands) {
+                log.info(`Loading command ${command.default.data.name}`);
+                this.commands.set(command.default.data.name, command.default);
+            }
+        } catch (e) { log.error(e); }
 
         this.on('interactionCreate', async (interaction) => {
             switch (true) {
@@ -107,27 +107,27 @@ export class Bot extends Client {
     }
 
     private async loadEvents(): Promise<void> {
-        const eventFiles = await readdir(resolve(__dirname, '../events'));
-        const eventImports = eventFiles
-            .filter((file) => file.endsWith('.ts') || file.endsWith('.js'))
-            .map((file) => {
-                const filePath = resolve(__dirname, '../events', file);
-                const moduleUrl = new URL(`file://${filePath}`).href;
+        try {
+            const eventFiles = await readdir(resolve(__dirname, '../events'));
+            const eventImports = eventFiles
+                .filter((file) => file.endsWith('.ts') || file.endsWith('.js'))
+                .map((file) => {
+                    const filePath = resolve(__dirname, '../events', file);
+                    return import(filePath) as Promise<{
+                        default: Event<keyof ClientEvents>;
+                    }>;
+                });
 
-                return import(moduleUrl) as Promise<{
-                    default: Event<keyof ClientEvents>;
-                }>;
-            });
-
-        const events = await Promise.all(eventImports);
-        for (const event of events) {
-            log.info(`Loading event ${event.default.name}`);
-            if (event.default.once) {
-                this.once(event.default.name, (...args) => event.default.execute(this.prisma, ...args));
-            } else {
-                this.on(event.default.name, (...args) => event.default.execute(this.prisma, ...args));
+            const events = await Promise.all(eventImports);
+            for (const event of events) {
+                log.info(`Loading event ${event.default.name}`);
+                if (event.default.once) {
+                    this.once(event.default.name, (...args) => event.default.execute(this.prisma, ...args));
+                } else {
+                    this.on(event.default.name, (...args) => event.default.execute(this.prisma, ...args));
+                }
             }
-        }
+        } catch (e) { log.error(e); }
     }
 
     public async login(): Promise<string> {

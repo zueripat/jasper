@@ -3,8 +3,8 @@
     "version": "2.0.0",
     "description": "An open source private utility Discord bot",
     "scripts": {
-        "build": "rimraf dist && npm run prettier && tsc",
-        "start": "npm run build && npm run lint && node dist/index.js",
+        "build": "rimraf dist && tsc",
+        "start": "npm run build && node dist/index.js",
         "lint": "eslint src --ext .ts",
         "lint:fix": "eslint src --ext .ts --fix",
         "prettier": "prettier --write **/*.{ts,js,json}",

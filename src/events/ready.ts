@@ -1,6 +1,6 @@
-import { Event } from '../util/types.js';
+import { Event } from '../util/types';
+import { logger } from '../util/logging';
 import { ActivityType, Events } from 'discord.js';
-import { logger } from '../util/logging.js';
 
 const log = logger.child({ name: 'ready', type: 'event' });
 
