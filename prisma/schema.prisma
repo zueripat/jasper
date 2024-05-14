@@ -1,0 +1,42 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Guild {
+  id         String   @id
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  tags  Tag[]
+  users User[]
+}
+
+model User {
+  id         String   @id
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  guild_id String @unique
+  balance  BigInt
+
+  tags  Tag[]
+  guild Guild @relation(fields: [guild_id], references: [id])
+}
+
+model Tag {
+  id         String   @id @default(cuid())
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user_id  String
+  guild_id String
+  name     String
+
+  author User  @relation(fields: [user_id], references: [id])
+  guild  Guild @relation(fields: [guild_id], references: [id])
+}
