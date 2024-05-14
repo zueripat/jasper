@@ -1,13 +1,16 @@
-FROM node:20
+FROM node:latest
 
 WORKDIR /jasper
 
-COPY package*.json ./
+COPY package.json ./
+COPY prisma ./
 
-RUN yarn
+RUN npm install --omit-dev
+RUN npx prisma generate
 
 COPY  . .
 
-EXPOSE 3000:8080
+# Ensure the entrypoint script is executable
+RUN chmod +x ./entrypoint.sh
 
-CMD ["yarn", "start"]
+CMD ["./entrypoint.sh"]
