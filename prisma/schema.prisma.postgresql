@@ -3,28 +3,21 @@ generator client {
 }
 
 datasource db {
-  provider = "mongodb"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 model Guild {
-  id         String   @unique
-  oid        String   @id @default(auto()) @map("_id") @db.ObjectId
+  id         String   @id
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
-
-  prefix      String  @default("jasper,")
-  adminRole   String?
-  supportRole String?
-  staffRole   String?
 
   tags  Tag[]
   users User[]
 }
 
 model User {
-  id         String   @unique
-  oid        String   @id @default(auto()) @map("_id") @db.ObjectId
+  id         String   @id
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -36,30 +29,30 @@ model User {
 }
 
 model Tag {
-  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  id         String   @id @default(cuid())
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
   user_id  String
   guild_id String
-  embed_id String @db.ObjectId
+  embed_id String
   name     String
 
   author User  @relation(fields: [user_id], references: [id])
   guild  Guild @relation(fields: [guild_id], references: [id])
-  embed  Embed @relation(fields: [embed_id], references: [oid])
+  embed  Embed @relation(fields: [embed_id], references: [id])
 
   @@unique([name, guild_id], name: "tag_id")
 }
 
 model Embed {
-  oid        String   @id @default(auto()) @map("_id") @db.ObjectId
+  id         String   @id @default(cuid())
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
   title       String
-  description String?
-  footer      String?
+  description String
+  footer      String
 
   tags Tag[]
 }

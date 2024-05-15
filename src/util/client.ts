@@ -1,9 +1,19 @@
-import { Client, ClientEvents, Collection, REST, Routes } from 'discord.js';
+import {
+    AutocompleteInteraction,
+    ChatInputCommandInteraction,
+    Client,
+    ClientEvents,
+    Collection,
+    ContextMenuCommandInteraction,
+    REST,
+    Routes,
+} from 'discord.js';
 import { readdir } from 'fs/promises';
 import { resolve } from 'node:path';
+import Cache from './cache';
 
 import { logger } from './logging.js';
-import { Command, CommandInteraction, Event } from './types.js';
+import { CommandGroup, CommandInteraction, Event, StandaloneCommand } from './types.js';
 import { DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID, DISCORD_DEV_GUILD_ID } from './config.js';
 import { PrismaClient } from '@prisma/client';
 
@@ -11,13 +21,26 @@ const log = logger.child({ name: 'client', type: 'discord' });
 
 export class Bot extends Client {
     public readonly prisma = new PrismaClient();
-    private readonly clientID = DISCORD_CLIENT_ID!;
-    private readonly devGuilds = DISCORD_DEV_GUILD_ID ? [DISCORD_DEV_GUILD_ID] : [];
+    public readonly cache = new Cache(this.prisma);
 
-    private commands = new Collection<string, Command<CommandInteraction, boolean>>();
+    private readonly clientID = DISCORD_CLIENT_ID!;
+    private readonly devGuilds = DISCORD_DEV_GUILD_ID ? [ DISCORD_DEV_GUILD_ID ] : [];
+
+    private commands = new Collection<string, StandaloneCommand<CommandInteraction, false> | CommandGroup<CommandInteraction, false>>();
 
     private async init(): Promise<void> {
         log.info('Initializing Discord Client');
+
+        // Checking Database connection
+        try {
+            await this.prisma.$connect();
+            log.info('Database connection established successfully.');
+        } catch (error) {
+            log.error('Failed to connect to the database:', error);
+            process.exit(1);
+        } finally {
+            await this.prisma.$disconnect();
+        }
 
         await this.loadCommands();
         await this.loadEvents();
@@ -34,9 +57,9 @@ export class Bot extends Client {
                     body: guildCommands.map((command) => command.data),
                 });
 
-                log.info(`Successfully reloaded ${guildCommands.size} guild (/) commands for guild ${guildID}`);
+                log.info(`Successfully reloaded guild (/) commands for guild ${ guildID }`);
             } catch (error) {
-                log.error(`Failed to reload guild (/) commands for guild ${guildID}`);
+                log.error(`Failed to reload guild (/) commands for guild ${ guildID }`);
                 log.error(error);
             }
         }
@@ -46,7 +69,7 @@ export class Bot extends Client {
                 body: globalCommands.map((command) => command.data),
             });
 
-            log.info(`Successfully reloaded ${globalCommands.size} global (/) commands.`);
+            log.info(`Successfully reloaded global (/) commands.`);
         } catch (error) {
             log.error('Failed to reload global (/) commands.');
             log.error(error);
@@ -61,45 +84,102 @@ export class Bot extends Client {
                 .map((file) => {
                     const filePath = resolve(__dirname, '../events/interactions', file);
                     return import(filePath) as Promise<{
-                        default: Command<CommandInteraction, boolean>;
+                        default: StandaloneCommand<CommandInteraction, false> | CommandGroup<CommandInteraction, false>;
                     }>;
                 });
 
             const commands = await Promise.all(commandImports);
             for (const command of commands) {
-                log.info(`Loading command ${command.default.data.name}`);
+                if ('subcommands' in command.default) {
+                    log.info(`Loading command group: ${command.default.data.name} with ${Object.keys(command.default.subcommands).length} subcommands`);
+                    for (const [subcommandName] of Object.entries(command.default.subcommands)) {
+                        log.info(`[>] Subcommand: ${subcommandName}`);
+                    }
+                } else {
+                    log.info(`Loading standalone command: ${command.default.data.name}`);
+                }
                 this.commands.set(command.default.data.name, command.default);
             }
         } catch (e) { log.error(e); }
 
         this.on('interactionCreate', async (interaction) => {
             switch (true) {
-                case interaction.isChatInputCommand() || interaction.isContextMenuCommand(): {
-                    const applicationCommand = this.commands.get(interaction.commandName);
-
-                    if (applicationCommand && applicationCommand.data) {
-                        await applicationCommand.execute(interaction, this.prisma);
+                case interaction.isChatInputCommand(): {
+                    const command = this.commands.get(interaction.commandName);
+                    if (command && command.data) {
+                        if ('subcommands' in command) {
+                            const subcommandName = (interaction as ChatInputCommandInteraction).options.getSubcommand(false);
+                            if (subcommandName && subcommandName in command.subcommands) {
+                                const subcommand = command.subcommands[subcommandName];
+                                await subcommand.execute(interaction as ChatInputCommandInteraction, this);
+                            }
+                        } else {
+                            await command.execute(interaction as ChatInputCommandInteraction, this);
+                        }
+                    }
+                    break;
+                }
+                case interaction.isContextMenuCommand(): {
+                    const applicationCommand = this.commands.get(interaction.commandName) as StandaloneCommand<ContextMenuCommandInteraction, false>;
+                    if (applicationCommand) {
+                        await applicationCommand.execute(interaction as ContextMenuCommandInteraction, this);
                     }
                     break;
                 }
                 case interaction.isAutocomplete(): {
-                    const autocompleteCommand = this.commands.get(interaction.commandName);
-                    if (autocompleteCommand && autocompleteCommand.data && autocompleteCommand.autocomplete) {
-                        await autocompleteCommand.autocomplete(interaction, this.prisma);
+                    const applicationCommand = this.commands.get(interaction.commandName) as CommandGroup<ChatInputCommandInteraction, false>;
+                    if (applicationCommand) {
+                        const subcommandName = (interaction as AutocompleteInteraction).options.getSubcommand(false);
+                        if (subcommandName && subcommandName in applicationCommand.subcommands) {
+                            const subcommand = applicationCommand.subcommands[subcommandName];
+                            if (subcommand.autocomplete) {
+                                await subcommand.autocomplete(interaction, this);
+                            }
+                        } else if (applicationCommand.autocomplete) {
+                            await applicationCommand.autocomplete(interaction, this);
+                        }
                     }
                     break;
                 }
                 case interaction.isModalSubmit(): {
-                    if (
-                        interaction.customId &&
-                        this.commands.some((command) => command.custom_ids && command.custom_ids.includes(interaction.customId))
-                    ) {
-                        const command = this.commands.find((command) => command.custom_ids?.includes(interaction.customId));
+                    const customId = interaction.customId;
+                    const userId = customId.split('_').pop();
+                    const commandPrefix = customId.substring(0, customId.lastIndexOf('_'));
 
-                        if (command && command.modal_submit) {
-                            await command.modal_submit(interaction, this.prisma);
+                    const command = [...this.commands.values()].find((cmd) =>
+                        'custom_ids' in cmd && cmd.custom_ids && cmd.custom_ids.some(id => customId.startsWith(id))
+                    );
+
+                    if (command && 'subcommands' in command) {
+                        for (const subcommand of Object.values(command.subcommands)) {
+                            if (subcommand.custom_ids?.includes(commandPrefix) && subcommand.modal_submit) {
+                                if (userId === interaction.user.id) {
+                                    await subcommand.modal_submit(interaction, this);
+                                } else {
+                                    await interaction.reply({ content: "You do not have permission to submit this modal.", ephemeral: true });
+                                }
+                            }
                         }
                     }
+                    /*
+                    const commands = this.commands.filter((command) => command.custom_ids?.includes(customId));
+                    for (const command of commands.values()) {
+                        if ('subcommands' in command) {
+                            for (const subcommand of Object.values(command.subcommands)) {
+                                if (subcommand.custom_ids?.includes(customId) && subcommand.modal_submit) {
+                                    await subcommand.modal_submit(interaction, this);
+                                }
+                            }
+                        } else if (command.custom_ids?.includes(customId) && command.modal_submit) {
+                            await command.modal_submit(interaction, this);
+                        }
+                    }
+
+                     */
+                    break;
+                }
+                default: {
+                    log.warn(`Unhandled interaction type: ${interaction.type}`);
                     break;
                 }
             }
@@ -120,11 +200,11 @@ export class Bot extends Client {
 
             const events = await Promise.all(eventImports);
             for (const event of events) {
-                log.info(`Loading event ${event.default.name}`);
+                log.info(`Loading event ${ event.default.name }`);
                 if (event.default.once) {
-                    this.once(event.default.name, (...args) => event.default.execute(this.prisma, ...args));
+                    this.once(event.default.name, (...args) => event.default.execute(this, ...args));
                 } else {
-                    this.on(event.default.name, (...args) => event.default.execute(this.prisma, ...args));
+                    this.on(event.default.name, (...args) => event.default.execute(this, ...args));
                 }
             }
         } catch (e) { log.error(e); }
